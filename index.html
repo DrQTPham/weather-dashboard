@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Trạm Quan Trắc Thời Tiết - Realtime</title>
+
+<!-- Firebase SDK -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<!-- Chart.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+<style>
+  :root {
+    --bg: #0f1419;
+    --card-bg: #1a2129;
+    --text: #e6edf3;
+    --text-dim: #8b96a3;
+    --accent-temp: #ff6b6b;
+    --accent-hum: #4dabf7;
+    --accent-rain: #51cf66;
+    --accent-alert: #ff4757;
+    --border: #2a333d;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  header h1 {
+    font-size: 1.8rem;
+    font-weight: 700;
+  }
+
+  header p {
+    color: var(--text-dim);
+    margin-top: 6px;
+    font-size: 0.9rem;
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 0.85rem;
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-rain);
+    animation: pulse 2s infinite;
+  }
+
+  .dot.offline { background: #6c757d; animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .alert-banner {
+    display: none;
+    background: var(--accent-alert);
+    color: white;
+    padding: 14px 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-weight: 600;
+    animation: blink 1.5s infinite;
+  }
+
+  .alert-banner.show { display: block; }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.75; }
+  }
+
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  .card .label {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .card .value {
+    font-size: 2.4rem;
+    font-weight: 700;
+  }
+
+  .card.temp .value { color: var(--accent-temp); }
+  .card.hum .value { color: var(--accent-hum); }
+  .card.rain .value { color: var(--accent-rain); font-size: 1.8rem; }
+  .card.rain.active .value { color: var(--accent-alert); }
+
+  .chart-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+
+  .chart-card h2 {
+    font-size: 1.05rem;
+    margin-bottom: 14px;
+    color: var(--text-dim);
+  }
+
+  .chart-wrap {
+    position: relative;
+    height: 280px;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-top: 24px;
+  }
+
+  @media (max-width: 700px) {
+    .cards { grid-template-columns: 1fr; }
+    .chart-wrap { height: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>🌡️ Trạm Quan Trắc Thời Tiết</h1>
+    <p>Dữ liệu cập nhật trực tiếp từ ESP8266</p>
+    <div class="status-bar">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Đang kết nối...</span>
+    </div>
+  </header>
+
+  <div class="alert-banner" id="alertBanner">⚠️ CẢNH BÁO: Thông số vượt ngưỡng an toàn!</div>
+
+  <div class="cards">
+    <div class="card temp">
+      <div class="label">Nhiệt độ</div>
+      <div class="value"><span id="tempValue">--</span>°C</div>
+    </div>
+    <div class="card hum">
+      <div class="label">Độ ẩm</div>
+      <div class="value"><span id="humValue">--</span>%</div>
+    </div>
+    <div class="card rain" id="rainCard">
+      <div class="label">Trạng thái mưa / ngập</div>
+      <div class="value" id="rainValue">--</div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>Biểu đồ Nhiệt độ & Độ ẩm theo thời gian</h2>
+    <div class="chart-wrap">
+      <canvas id="historyChart"></canvas>
+    </div>
+  </div>
+
+  <footer>
+    Cập nhật lần cuối: <span id="lastUpdate">--</span>
+  </footer>
+</div>
+
+<script>
+  // ====== CẤU HÌNH FIREBASE - THAY BẰNG CONFIG CỦA BẠN ======
+  // Lấy trong Firebase Console > Project settings > General > Your apps > SDK config
+  const firebaseConfig = {
+    databaseURL: "https://weather-esp8266-264e6-default-rtdb.asia-southeast1.firebasedatabase.app"
+  };
+
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+
+  const tempValue = document.getElementById('tempValue');
+  const humValue = document.getElementById('humValue');
+  const rainValue = document.getElementById('rainValue');
+  const rainCard = document.getElementById('rainCard');
+  const alertBanner = document.getElementById('alertBanner');
+  const lastUpdate = document.getElementById('lastUpdate');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+
+  // ----- Realtime giá trị hiện tại -----
+  db.ref('sensor').on('value', (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+
+    tempValue.textContent = data.temp != null ? data.temp.toFixed(1) : '--';
+    humValue.textContent = data.hum != null ? data.hum.toFixed(1) : '--';
+    rainValue.textContent = data.rain === 'CO' ? 'CÓ MƯA / NGẬP' : 'KHÔNG MƯA';
+
+    if (data.rain === 'CO') {
+      rainCard.classList.add('active');
+    } else {
+      rainCard.classList.remove('active');
+    }
+
+    if (data.alert) {
+      alertBanner.classList.add('show');
+    } else {
+      alertBanner.classList.remove('show');
+    }
+
+    lastUpdate.textContent = new Date().toLocaleString('vi-VN');
+    statusDot.classList.remove('offline');
+    statusText.textContent = 'Đang trực tuyến';
+  });
+
+  // Phát hiện mất kết nối (không có dữ liệu mới quá 30s)
+  let lastDataTime = Date.now();
+  db.ref('sensor').on('value', () => { lastDataTime = Date.now(); });
+  setInterval(() => {
+    if (Date.now() - lastDataTime > 30000) {
+      statusDot.classList.add('offline');
+      statusText.textContent = 'Mất kết nối thiết bị';
+    }
+  }, 5000);
+
+  // ----- Đồ thị lịch sử -----
+  const ctx = document.getElementById('historyChart').getContext('2d');
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        {
+          label: 'Nhiệt độ (°C)',
+          data: [],
+          borderColor: '#ff6b6b',
+          backgroundColor: 'rgba(255,107,107,0.1)',
+          tension: 0.3,
+          yAxisID: 'y',
+          pointRadius: 0,
+        },
+        {
+          label: 'Độ ẩm (%)',
+          data: [],
+          borderColor: '#4dabf7',
+          backgroundColor: 'rgba(77,171,247,0.1)',
+          tension: 0.3,
+          yAxisID: 'y1',
+          pointRadius: 0,
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 300 },
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          ticks: { color: '#8b96a3', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+          grid: { color: '#2a333d' }
+        },
+        y: {
+          position: 'left',
+          ticks: { color: '#ff6b6b' },
+          grid: { color: '#2a333d' },
+          title: { display: true, text: '°C', color: '#ff6b6b' }
+        },
+        y1: {
+          position: 'right',
+          ticks: { color: '#4dabf7' },
+          grid: { drawOnChartArea: false },
+          title: { display: true, text: '%', color: '#4dabf7' }
+        }
+      },
+      plugins: {
+        legend: { labels: { color: '#e6edf3' } }
+      }
+    }
+  });
+
+  const MAX_POINTS = 50;
+
+  function formatTime(ts) {
+    // ts là millis() từ ESP8266 (thời gian từ lúc boot), không phải epoch time thật
+    // nên ta hiển thị theo thời gian client nhận được, sắp theo thứ tự nhận
+    const d = new Date();
+    return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  // Lắng nghe các bản ghi mới thêm vào /history
+  db.ref('history').limitToLast(MAX_POINTS).on('child_added', (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+
+    chart.data.labels.push(formatTime());
+    chart.data.datasets[0].data.push(data.temp);
+    chart.data.datasets[1].data.push(data.hum);
+
+    if (chart.data.labels.length > MAX_POINTS) {
+      chart.data.labels.shift();
+      chart.data.datasets[0].data.shift();
+      chart.data.datasets[1].data.shift();
+    }
+
+    chart.update();
+  });
+</script>
+
+</body>
+</html>
